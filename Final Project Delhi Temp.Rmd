@@ -1,0 +1,336 @@
+---
+title: "Delhi Temperature Forecasting"
+author: "Ethan Tran"
+date: "2025-03-21"
+output: html_document
+---
+
+#Forecasting Temperatures in Delhi Using Time Series
+##By Ethan Tran
+
+## Introduction
+
+In this project, I will attempt to forecast the temperature in the city of Delhi using previous data. The two most vital variables in the dataset I will be using are the date and average daily temperature between 2013 and 2017 in Delhi, which I will be using to formulate a time series. This dataset is interesting and important because after thorough analysis, one can undeniably prove that the climate is changing and attempt to predict where our planet is headed in the coming years. I used many techniques and testing many models in this project in an attempt to accurately forecast the temperature of Delhi after 2017, which you will see throughout the project report. There were many positives and the project went smoothly until I ran into some issues with the diagnostics checking. I spent all night trying to but unfortunately I could not figure out how to pass the Box-Ljung and Box-Pierce test, and could not figure out how to properly plot my forecasts. From my project, I can conclude that the average temperatures of Delhi did slightly increase over time. I used R for my project and found my dataset on Kaggle. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(xts)
+library(zoo)
+library(MASS)
+library(ggplot2)
+library(ggfortify)
+library(forecast)
+library(MuMIn)
+library(tseries)
+options(xts.message.period.apply.mean = FALSE)
+```
+
+```{r}
+climate <- read.csv("C:/Users/Ethan Tran/PSTAT174/Project/DailyDelhiClimateTrain.csv")
+climate_test <- read.csv("C:/Users/Ethan Tran/PSTAT174/Project/DailyDelhiClimateTest.csv")
+#reading in the datasets, already partitioned into training and testing sets in Kaggle
+
+climate$date <- as.Date(climate$date)
+climate_test$date <- as.Date(climate_test$date)
+#changing the dates to date objects
+
+climate2 <- rbind(climate, climate_test)
+```
+
+```{r}
+temp_ts <- ts(climate$meantemp, frequency = 1)
+#creating time series of mean daily temperature in Delhi
+
+plot(1:length(temp_ts),temp_ts, main =
+"Time Series of Temperature from Year 2013 to 2017", type = 'l',xlab='index')
+index = 1: length(temp_ts)
+trend <- lm(temp_ts ~ index)
+abline(trend, col="red")
+abline(h=mean(temp_ts) , col='blue')
+#plotting the average daily temperature in Delhi from 2013 to 2017
+```
+
+Looking at the plot of the time series, there is a clear positive trend and seasonal component in this time series. There are no apparent sharp changes in behavior. The variance seems to slightly increase over time. I will try a log transform to stabilize the variance. Differencing will need to be applied in order to make this a stationary time series for forecasting. 
+
+```{r}
+hist(climate$meantemp, col="light blue", xlab="", main="Histogram of Temperature Time Series") 
+#plotting histogram
+
+acf(climate$meantemp, main = "ACF of Temperature Time Series")
+#plotting ACF
+
+var(climate$meantemp)
+#getting the variance of the time series
+```
+
+The histogram has a slight left skew and the ACF plot shows slow decay. The variance is about 54. If the variance increases after differencing, this indicates over-differencing.
+
+```{r}
+log_temp <- log(temp_ts)
+plot(1:length(log_temp),log_temp, main =
+"Time Series of Log Temperature from Year 2013 to 2017", type = 'l',xlab='index')
+index = 1: length(log_temp)
+trend <- lm(log_temp ~ index)
+abline(trend, col="red")
+abline(h=mean(log_temp) , col='blue')
+#plotting the log average daily temperature in Delhi from 2013 to 2017
+var(log_temp)
+#getting the variance after log transform
+```
+
+After the log transform, the variance decreased from about 54 to about 0.1126.
+
+```{r}
+temp_diff_12 <- diff(log_temp, lag=12)
+plot.ts(temp_diff_12, main = "Temperature Time Series Differenced at Lag 12")
+fit <- lm(temp_diff_12 ~ as.numeric(1:length(temp_diff_12))); abline(fit, col="red")
+abline(h=mean(temp_diff_12), col="blue")
+var(temp_diff_12)
+#variance after differencing at 12
+```
+
+I then differenced at lag 12, from which the variance reduced to about 0.0259. The trend was essentially gone and the seasonal component was greatly reduced, though still visible.
+
+```{r}
+temp_diff_1 <- diff(temp_diff_12, lag=1)
+plot.ts(temp_diff_1)
+fit <- lm(temp_diff_1 ~ as.numeric(1:length(temp_diff_1))); abline(fit, col="red", lwd=2, lty=2)
+abline(h=mean(temp_diff_1), col="blue")
+var(temp_diff_1)
+```
+
+Finally, I differenced again at lag 1 and the seasonal component and trend were no longer visible. The variance reduced to about 0.0106. Visually, the data exhibits stationary traits. 
+
+```{r}
+acf(temp_diff_12, lag.max = 40, main = "ACF of Temp Differenced at Lag 12")
+acf(temp_diff_1, lag.max = 40, main = "ACF of Temp Differenced at Lag 12 and 1")
+```
+
+After looking at the ACF plots, we can see that after differencing at lag 12, the seasonal component is less visible but there is still a slow decay and significant ACF at high lags, indicating non stationarity. After differencing again at lag 1, we see a nice ACF plot that looks like a stationary process. 
+
+```{r}
+hist(temp_diff_1, density=20,breaks=20, col="blue", xlab="", prob=TRUE, main = "Histogram of Log Temp Diff at Lag 12 and 1")
+m<-mean(temp_diff_1)
+std<- sqrt(var(temp_diff_1))
+curve( dnorm(x,m,std), add=TRUE )
+```
+
+The histogram of the data resembles a normal distribution, which is ideal. 
+
+```{r}
+acf(temp_xts_1, na.action = na.pass, lag.max = 40, main = "ACF of Temp Differenced at Lag 12 and 1")
+pacf(temp_xts_1, na.action = na.pass, lag.max = 80, main = "PACF of Temp Differenced at Lag 12 and 1")
+```
+
+Plausible Models to Test
+SARIMA: s = 12, p = 1 or 3, P = 1-6 d = 1, D = 1, q = 1, 2, or 3, Q = 1
+s=12 and D=1 as we differenced at lag 12 one time, and d=1 since we differenced at lag 1 once. 
+The ACF is outside the confidence intervals at multiple points, but most noticeably are at lag 1, 3, 11, and 12. Q=1 and q could either be 1, 2, or 3. The PACF is noticeably outside the confidence intervals at 1-4, 11-13, 24-25, and 36, so P could be 1, 2, or 3. The PACF is significant at and around multiples of s=12. p could be 1 or 3. 
+SMA: set P and p to 0, no AR component
+SAR: set Q and q to 0, no MA component
+
+```{r}
+arima(log_temp, order = c(1, 1, 1), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+#SARIMA (1, 1, 1) x (1, 1, 1) x 12, best
+arima(log_temp, order = c(3, 1, 1), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+#SARIMA (3, 1, 1) x (1, 1, 1) x 12, best
+```
+
+After testing every possible model, my best one was a SARIMA model (1, 1, 1) x (1, 1, 1) x 12. I know this because it has the lowest AIC value of -3390.57. Because the sample size was so large, I chose to use AIC value. My second lowest AIC value was another SARIMA model (3, 1, 1) x (1, 1, 1) x 12, with a value of -3389.62. I will be using these two models for diagnostic testing.
+
+Model A: 𝜵𝟏 𝜵12 ln($U_t$) = (1 - $0.5834_{(0.0565)}$B)(1 - $0.7814_{(0.0431)}$B)(1 - $0.0123_{(0.0291)}$$B^{12}$)(1- $0.9856_{(0.0119)}$$B^{12}$)
+
+$\hat\sigma^2$ = 0.00544
+
+Model B: 𝜵𝟏 𝜵12 ln($U_t$) = (1 - $0.5546_{(0.0692)}$B - $0.0425_{(0.0334)}$$B^2$ + $0.044_{(0.031)}$$B^3$)($1 - 0.7654_{(0.0643)}$B)(1 - $0.0113_{(0.0291)}$$B^{12}$)(1 - $0.9862_{(0.0121)}$$B^{12}$)
+
+$\hat\sigma^2$ = 0.005427
+
+Model A is stationary and invertible because |ar1| < 1, |sar1| < 1, |ma1| < 1, and |sma1| < 1. 
+
+For Model B, we will have to check the non seasonal AR polynomial for if the roots are all greater than 1 for stationarity. We already know it is invertible because |ma1| and |sma1| < 1. If the red points, the roots of the polynomial, are outside the unit circle, then we know it is stationary. 
+
+
+```{r}
+source("plot.roots.R")
+plot.roots(NULL,polyroot(c(1, -0.5546, 0.0425, -0.044)), main="(B) roots of ar part, nonseasonal ")
+polyroot(c(1, -0.5546, 0.0425, -0.044))
+```
+
+From the graph, we can see that both models A and B are stationary and invertible. 
+
+```{r}
+#Diagnostics for Model A
+fit <- arima(log_temp, order=c(1,1,1), seasonal = list(order = c(1,1,1), period = 12), method="ML")
+res <- residuals(fit)
+hist(res,density=20,breaks=20, col="blue", xlab="", prob=TRUE)
+m <- mean(res)
+std <- sqrt(var(res))
+curve( dnorm(x,m,std), add=TRUE )
+plot.ts(res)
+fitt <- lm(res ~ as.numeric(1:length(res))); abline(fitt, col="red")
+abline(h=mean(res), col="blue")
+qqnorm(res,main= "Normal Q-Q Plot for Model B")
+qqline(res,col="blue")
+acf(res, lag.max=40)
+pacf(res, lag.max=40)
+shapiro.test(res)
+Box.test(res, lag = 38, type = c("Box-Pierce"), fitdf = 4)
+Box.test(res, lag = 38, type = c("Ljung-Box"), fitdf = 4)
+Box.test(res^2, lag = 12, type = c("Ljung-Box"), fitdf = 0)
+acf(res^2, lag.max=40)
+ar(res, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+```{r}
+#Diagnostics for Model B
+fit2 <- arima(log_temp, order=c(3,1,1), seasonal = list(order = c(1,1,1), period = 12), method="ML")
+res2 <- residuals(fit)
+hist(res2,density=20,breaks=20, col="blue", xlab="", prob=TRUE)
+m2 <- mean(res2)
+std2 <- sqrt(var(res2))
+curve( dnorm(x,m2,std2), add=TRUE )
+plot.ts(res2)
+fitt2 <- lm(res2 ~ as.numeric(1:length(res2))); abline(fitt, col="red")
+abline(h=mean(res2), col="blue")
+qqnorm(res2,main= "Normal Q-Q Plot for Model B")
+qqline(res2,col="blue")
+acf(res2, lag.max=40)
+pacf(res2, lag.max=40)
+shapiro.test(res2)
+Box.test(res2, lag = 38, type = c("Box-Pierce"), fitdf = 6)
+Box.test(res2, lag = 38, type = c("Ljung-Box"), fitdf = 6)
+Box.test(res2^2, lag = 12, type = c("Ljung-Box"), fitdf = 0)
+acf(res2^2, lag.max=40)
+ar(res2, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+For models A and B, there is no visible trend, the histogram of residuals is fairly normal with sample mean almost 0, 95% of the data definitely resides between positive and negative 2 when looking at the QQ plot, sample ACF and PACF look good, but we cannot entirely attribute the statistically significant ACFs and PACFs to white noise. Residuals squared show nonlinear dependence in the plot as well as in the McLeod Li test. Shapiro-Wilk test was failed, which is to be expected with highly seasonal data such as temperatures. Unfortunately the Box-Pierce and Box-Ljung tests were not passed. Both models had order selected 0, so they passed the yule-walker test. Since both my models A and B passed and failed the same diagnostic tests, I will be using model A for forecasting since it had a lower AIC score. 
+
+```{r}
+fit_A <- arima(log_temp, order=c(1,1,1), seasonal = list(order = c(1,1,1), period = 12), method="ML")
+forecast(fit_A, h = 114)
+```
+
+```{r}
+pred_tr <- predict(fit_A, n.ahead = 114)
+U_tr = pred_tr$pred + 2*pred_tr$se
+L_tr = pred_tr$pred - 2*pred_tr$se
+ts.plot(log_temp, xlim=c(1,length(log_temp)+114), ylim = c(min(log_temp),5))
+lines(U_tr, col="blue", lty="dashed")
+lines(L_tr, col="blue", lty="dashed")
+points((length(log_temp)+1):(length(log_temp)+114), pred_tr$pred, col="red")
+```
+
+Looking at the plot of the forecast, the forecasted points all seem to follow the previously observed seasonality. 
+
+```{r}
+pred.orig <- exp(pred_tr$pred)
+U= exp(U_tr)
+L= exp(L_tr)
+ts.plot(climate$meantemp, xlim=c(1,length(climate$meantemp)+114), ylim = c(min(climate$meantemp),50))
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(climate$meantemp)+1):(length(climate$meantemp)+114), pred.orig, col="red")
+
+ts.plot(climate$meantemp, xlim = c(1400,length(climate$meantemp)+114), ylim = c(0,50))
+lines(U, col="blue", lty="dashed")
+lines(L, col="blue", lty="dashed")
+points((length(climate$meantemp)+1):(length(climate$meantemp)+114), pred.orig, col="red")
+```
+
+Looking at the plot of the forecast, the forecasted points all seem to follow the previously observed seasonality and trend. Our model performed decently. 
+
+## Summary
+
+In this project, I attempted to forecast the temperature in the city of Delhi based on data about previous daily temperatures in the city. Many techniques were used in this project, such as transforming data, differencing data, and testing many models until finding one that fits best. There are many plots for visualization. In the end, the forecasting model was not the most precise, but the techniques used to get achieve a model are much more important than the end results.
+
+##Appendix 
+
+
+List of Models Tested: 
+arima(log_temp, order = c(0,1,1), seasonal = list(order = c(0,1,1), period = 12), method = "ML")
+SMA (0, 1, 1) X (0, 1, 1) x 12
+
+arima(log_temp, order = c(0,1,2), seasonal = list(order = c(0,1,2), period = 12), method = "ML")
+SMA (0, 1, 2) X (0, 1, 1) x 12
+
+arima(log_temp, order = c(0,1,3), seasonal = list(order = c(0,1,3), period = 12), method = "ML")
+SMA (0, 1, 3) X (0, 1, 1) x 12
+
+arima(log_temp, order = c(1,1,0), seasonal = list(order = c(1,1,0), period = 12), method = "ML")
+SAR (1, 1, 0) X (1, 1, 0) x 12
+
+arima(log_temp, order = c(1,1,0), seasonal = list(order = c(2,1,0), period = 12), method = "ML")
+SAR (1, 1, 0) X (2, 1, 0) x 12
+
+arima(log_temp, order = c(1,1,0), seasonal = list(order = c(3,1,0), period = 12), method = "ML")
+SAR (1, 1, 0) X (3, 1, 0) x 12
+
+arima(log_temp, order = c(3,1,0), seasonal = list(order = c(1,1,0), period = 12), method = "ML")
+SAR (3, 1, 0) X (1, 1, 0) x 12
+
+arima(log_temp, order = c(3,1,0), seasonal = list(order = c(2,1,0), period = 12), method = "ML")
+SAR (3, 1, 0) X (2, 1, 0) x 12
+
+arima(log_temp, order = c(3,1,0), seasonal = list(order = c(3,1,0), period = 12), method = "ML")
+SAR (3, 1, 0) X (3, 1, 0) x 12
+
+arima(log_temp, order = c(1, 1, 1), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 1) x (1, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 2), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 2) x (1, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 3), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 3) x (1, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 1), seasonal = list(order = c(2, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 1) x (2, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 2), seasonal = list(order = c(2, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 2) x (2, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 3), seasonal = list(order = c(2, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 3) x (2, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 1), seasonal = list(order = c(3, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 1) x (3, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 2), seasonal = list(order = c(3, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 2) x (3, 1, 1) x 12
+
+arima(log_temp, order = c(1, 1, 3), seasonal = list(order = c(3, 1, 1), period = 12), method = "ML")
+SARIMA (1, 1, 3) x (3, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 1), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 1) x (1, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 2), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 2) x (1, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 3), seasonal = list(order = c(1, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 3) x (1, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 1), seasonal = list(order = c(2, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 1) x (2, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 2), seasonal = list(order = c(2, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 2) x (2, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 3), seasonal = list(order = c(2, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 3) x (2, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 1), seasonal = list(order = c(3, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 1) x (3, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 2), seasonal = list(order = c(3, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 2) x (3, 1, 1) x 12
+
+arima(log_temp, order = c(3, 1, 3), seasonal = list(order = c(3, 1, 1), period = 12), method = "ML")
+SARIMA (3, 1, 3) x (3, 1, 1) x 12
+
